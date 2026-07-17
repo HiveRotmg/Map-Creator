@@ -1,4 +1,5 @@
 node_modules/
 maps/*.json
+maps/.previews/
 !samples/
 .DS_Store

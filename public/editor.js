@@ -4,7 +4,11 @@
   // ── DOM ──────────────────────────────────────────────────────────────
   const canvas = document.getElementById('map-canvas');
   const ctx = canvas.getContext('2d');
-  const emptyState = document.getElementById('empty-state');
+  const projectsScreen = document.getElementById('projects-screen');
+  const projectsGrid = document.getElementById('projects-grid');
+  const projectsEmpty = document.getElementById('projects-empty');
+  const projectsStatus = document.getElementById('projects-status');
+  const projectsImportFile = document.getElementById('projects-import-file');
   const assetList = document.getElementById('asset-list');
   const assetSearch = document.getElementById('asset-search');
   const assetFilter = document.getElementById('asset-filter');
@@ -19,9 +23,13 @@
   const dlgNew = document.getElementById('dlg-new');
   const dlgOpen = document.getElementById('dlg-open');
   const dlgSaveAs = document.getElementById('dlg-save-as');
+  const dlgResize = document.getElementById('dlg-resize');
   const openList = document.getElementById('open-list');
   const openFileInput = document.getElementById('open-file');
   const btnOpenConfirm = document.getElementById('btn-open-confirm');
+  let projectsVisible = true;
+  /** When set, resize dialog applies to this saved project file instead of the open editor map. */
+  let resizeTargetFile = null;
 
   // ── State ────────────────────────────────────────────────────────────
   let catalog = { objects: [], tiles: [], objectByType: {}, tileByType: {} };
@@ -48,6 +56,9 @@
 
   let tool = 'select';
   let showGrid = true;
+  let brushSize = 1;
+  const MIN_BRUSH = 1;
+  const MAX_BRUSH = 16;
   let camera = { x: 0, y: 0, zoom: 1 };
   const BASE_TILE = 32;
 
@@ -121,15 +132,171 @@
     if (!map) {
       mapTitleEl.textContent = 'No map';
       startInfo.textContent = 'Start: —';
-      emptyState.classList.remove('hidden');
     } else {
       mapTitleEl.textContent = (dirty ? '● ' : '') + map.name + (mapFile ? ' (' + mapFile + ')' : '');
       startInfo.textContent = 'Start: (' + startTile.x + ', ' + startTile.y + ')';
-      emptyState.classList.add('hidden');
     }
     zoomLabel.textContent = Math.round(camera.zoom * 100) + '%';
     document.getElementById('btn-undo').disabled = undoStack.length === 0;
     document.getElementById('btn-redo').disabled = redoStack.length === 0;
+    document.getElementById('btn-save').disabled = !map;
+    document.getElementById('btn-save-as').disabled = !map;
+    document.getElementById('btn-resize').disabled = !map;
+  }
+
+  function showProjectsScreen() {
+    projectsVisible = true;
+    projectsScreen.classList.remove('hidden');
+    refreshProjects();
+  }
+
+  function hideProjectsScreen() {
+    projectsVisible = false;
+    projectsScreen.classList.add('hidden');
+  }
+
+  function formatProjectDate(ms) {
+    if (!ms) return '';
+    try {
+      return new Date(ms).toLocaleString();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  async function refreshProjects() {
+    projectsStatus.classList.remove('hidden');
+    projectsStatus.textContent = 'Loading projects…';
+    projectsGrid.innerHTML = '';
+    projectsEmpty.classList.add('hidden');
+    try {
+      const res = await fetch('/api/maps');
+      const data = await res.json();
+      const maps = data.maps || [];
+      if (!maps.length) {
+        projectsEmpty.classList.remove('hidden');
+        projectsStatus.classList.add('hidden');
+        return;
+      }
+      maps.forEach(function (m) {
+        const card = document.createElement('article');
+        card.className = 'project-card';
+        card.tabIndex = 0;
+
+        const preview = document.createElement('div');
+        preview.className = 'project-preview';
+        const img = document.createElement('img');
+        img.alt = (m.name || m.file) + ' preview';
+        img.loading = 'lazy';
+        img.src = m.previewUrl || ('/api/maps/' + encodeURIComponent(m.file) + '/preview');
+        img.onerror = function () {
+          img.remove();
+          const fb = document.createElement('div');
+          fb.className = 'project-preview-fallback';
+          fb.textContent = (m.width || '?') + '×' + (m.height || '?');
+          preview.appendChild(fb);
+        };
+        preview.appendChild(img);
+
+        const body = document.createElement('div');
+        body.className = 'project-body';
+        const title = document.createElement('div');
+        title.className = 'project-title';
+        title.textContent = m.name || m.file;
+        const meta = document.createElement('div');
+        meta.className = 'project-meta';
+        const startTxt = m.start ? (' · start ' + m.start.x + ',' + m.start.y) : '';
+        meta.textContent = (m.width || '?') + '×' + (m.height || '?')
+          + ' · ' + (m.tileCount || 0) + ' tiles'
+          + ' · ' + (m.objectCount || 0) + ' objs'
+          + startTxt;
+        const date = document.createElement('div');
+        date.className = 'project-meta';
+        date.textContent = formatProjectDate(m.mtime);
+
+        const actions = document.createElement('div');
+        actions.className = 'project-card-actions';
+        const openBtn = document.createElement('button');
+        openBtn.type = 'button';
+        openBtn.className = 'primary';
+        openBtn.textContent = 'Open';
+        const resizeBtn = document.createElement('button');
+        resizeBtn.type = 'button';
+        resizeBtn.textContent = 'Resize';
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'danger';
+        delBtn.textContent = 'Delete';
+        actions.appendChild(openBtn);
+        actions.appendChild(resizeBtn);
+        actions.appendChild(delBtn);
+
+        body.appendChild(title);
+        body.appendChild(meta);
+        body.appendChild(date);
+        body.appendChild(actions);
+        card.appendChild(preview);
+        card.appendChild(body);
+
+        function openThis(evt) {
+          if (evt) evt.stopPropagation();
+          openProjectFile(m.file);
+        }
+        card.addEventListener('click', openThis);
+        card.addEventListener('keydown', function (evt) {
+          if (evt.key === 'Enter' || evt.key === ' ') {
+            evt.preventDefault();
+            openThis();
+          }
+        });
+        openBtn.addEventListener('click', openThis);
+        resizeBtn.addEventListener('click', function (evt) {
+          evt.stopPropagation();
+          openResizeDialogForProject(m);
+        });
+        delBtn.addEventListener('click', function (evt) {
+          evt.stopPropagation();
+          deleteProjectFile(m.file, m.name || m.file);
+        });
+
+        projectsGrid.appendChild(card);
+      });
+      projectsStatus.textContent = maps.length + ' project' + (maps.length === 1 ? '' : 's');
+    } catch (err) {
+      projectsStatus.textContent = 'Failed to load projects';
+      toast('Failed to load projects: ' + err.message, 'error');
+    }
+  }
+
+  async function openProjectFile(file) {
+    try {
+      const res = await fetch('/api/maps/' + encodeURIComponent(file));
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to open');
+      loadMapDocument(data.map, data.file);
+      hideProjectsScreen();
+      toast('Opened ' + data.file);
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  async function deleteProjectFile(file, label) {
+    if (!window.confirm('Delete project "' + label + '"? This cannot be undone.')) return;
+    try {
+      const res = await fetch('/api/maps/' + encodeURIComponent(file), { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Delete failed');
+      toast('Deleted ' + file);
+      refreshProjects();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  function goToProjects() {
+    if (dirty && !window.confirm('You have unsaved changes. Leave the editor anyway?')) return;
+    showProjectsScreen();
   }
 
   function textureUrl(file, index) {
@@ -535,7 +702,11 @@
   function undo() {
     const action = undoStack.pop();
     if (!action) return;
-    applyAction(action, true);
+    if (action.kind === 'resize') {
+      restoreMapState(action.before);
+    } else {
+      applyAction(action, true);
+    }
     redoStack.push(action);
     updateChrome();
   }
@@ -543,7 +714,11 @@
   function redo() {
     const action = redoStack.pop();
     if (!action) return;
-    applyAction(action, false);
+    if (action.kind === 'resize') {
+      restoreMapState(action.after);
+    } else {
+      applyAction(action, false);
+    }
     undoStack.push(action);
     updateChrome();
   }
@@ -594,18 +769,61 @@
     endStroke();
   }
 
+  function brushBounds(cx, cy) {
+    const size = Math.max(MIN_BRUSH, Math.min(MAX_BRUSH, brushSize | 0));
+    const offset = Math.floor((size - 1) / 2);
+    return {
+      x0: cx - offset,
+      y0: cy - offset,
+      x1: cx - offset + size - 1,
+      y1: cy - offset + size - 1,
+      size: size,
+    };
+  }
+
+  function forEachBrushTile(cx, cy, fn) {
+    const b = brushBounds(cx, cy);
+    for (let y = b.y0; y <= b.y1; y++) {
+      for (let x = b.x0; x <= b.x1; x++) {
+        if (inBounds(x, y)) fn(x, y);
+      }
+    }
+  }
+
+  function setBrushSize(next) {
+    const n = Math.max(MIN_BRUSH, Math.min(MAX_BRUSH, Math.round(Number(next) || 1)));
+    if (n === brushSize) {
+      updateBrushSizeUi();
+      return;
+    }
+    brushSize = n;
+    updateBrushSizeUi();
+    needsRedraw = true;
+  }
+
+  function updateBrushSizeUi() {
+    const range = document.getElementById('brush-size');
+    const label = document.getElementById('brush-size-label');
+    if (range) range.value = String(brushSize);
+    if (label) label.textContent = brushSize + '×' + brushSize;
+  }
+
   function applyToolAt(tx, ty, isDrag) {
     if (!map || !inBounds(tx, ty)) return;
     if (tool === 'tile') {
       if (selectedTileType == null) return;
       if (!painting) beginStroke('paint');
       painting = true;
-      applyTileChange(tx, ty, selectedTileType >>> 0, true);
+      forEachBrushTile(tx, ty, function (x, y) {
+        applyTileChange(x, y, selectedTileType >>> 0, true);
+      });
     } else if (tool === 'erase') {
       if (!painting) beginStroke('erase');
       painting = true;
-      if (objectsOnTile(tx, ty).length) eraseObjectAt(tx, ty, true);
-      else applyTileChange(tx, ty, -1, true);
+      forEachBrushTile(tx, ty, function (x, y) {
+        if (objectsOnTile(x, y).length) eraseObjectAt(x, y, true);
+        else applyTileChange(x, y, -1, true);
+      });
     } else if (tool === 'object') {
       if (isDrag) return;
       if (selectedObjectType == null) return;
@@ -833,13 +1051,42 @@
       ctx.stroke();
     }
 
-    // Hover / selection
+    // Hover / brush preview
     if (hoverTile && inBounds(hoverTile.x, hoverTile.y)) {
-      const sx = camera.x + hoverTile.x * ts;
-      const sy = camera.y + hoverTile.y * ts;
-      ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(sx + 0.5, sy + 0.5, ts - 1, ts - 1);
+      if ((tool === 'tile' || tool === 'erase') && brushSize > 1) {
+        const b = brushBounds(hoverTile.x, hoverTile.y);
+        const x0 = Math.max(0, b.x0);
+        const y0 = Math.max(0, b.y0);
+        const x1 = Math.min(map.width - 1, b.x1);
+        const y1 = Math.min(map.height - 1, b.y1);
+        if (x1 >= x0 && y1 >= y0) {
+          ctx.fillStyle = tool === 'erase'
+            ? 'rgba(229, 83, 75, 0.18)'
+            : 'rgba(64, 145, 108, 0.22)';
+          ctx.fillRect(
+            camera.x + x0 * ts,
+            camera.y + y0 * ts,
+            (x1 - x0 + 1) * ts,
+            (y1 - y0 + 1) * ts
+          );
+          ctx.strokeStyle = tool === 'erase'
+            ? 'rgba(229, 83, 75, 0.85)'
+            : 'rgba(64, 145, 108, 0.9)';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(
+            camera.x + x0 * ts + 0.5,
+            camera.y + y0 * ts + 0.5,
+            (x1 - x0 + 1) * ts - 1,
+            (y1 - y0 + 1) * ts - 1
+          );
+        }
+      } else {
+        const sx = camera.x + hoverTile.x * ts;
+        const sy = camera.y + hoverTile.y * ts;
+        ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(sx + 0.5, sy + 0.5, ts - 1, ts - 1);
+      }
     }
     if (selectedCell && inBounds(selectedCell.x, selectedCell.y)) {
       const sx = camera.x + selectedCell.x * ts;
@@ -1018,6 +1265,10 @@
       showGrid = !showGrid;
       document.getElementById('toggle-grid').checked = showGrid;
       needsRedraw = true;
+    } else if (evt.key === '[') {
+      setBrushSize(brushSize - 1);
+    } else if (evt.key === ']') {
+      setBrushSize(brushSize + 1);
     }
   });
 
@@ -1037,8 +1288,152 @@
     return Number.isFinite(n) ? n : NaN;
   }
 
+  function snapshotMapState() {
+    return {
+      width: map.width,
+      height: map.height,
+      defaultTile: map.defaultTile,
+      name: map.name,
+      start: { x: startTile.x, y: startTile.y },
+      tiles: Int32Array.from(tileGrid),
+      objects: objects.map(function (o) {
+        return { id: o.id, type: o.type, x: o.x, y: o.y };
+      }),
+      nextObjectId: nextObjectId,
+    };
+  }
+
+  function restoreMapState(snap) {
+    map.width = snap.width;
+    map.height = snap.height;
+    map.defaultTile = snap.defaultTile;
+    if (snap.name) map.name = snap.name;
+    tileGrid = Int32Array.from(snap.tiles);
+    objects = snap.objects.map(function (o) {
+      return { id: o.id, type: o.type, x: o.x, y: o.y };
+    });
+    nextObjectId = snap.nextObjectId || 1;
+    startTile = { x: snap.start.x, y: snap.start.y };
+    selectedCell = null;
+    selectedObjectId = null;
+    markDirty();
+    centerCamera();
+    updateChrome();
+    updateProps();
+  }
+
+  function resizeCurrentMap(newW, newH, fillType) {
+    if (!map) throw new Error('No map loaded');
+    if (!Number.isInteger(newW) || !Number.isInteger(newH) || newW < 1 || newH < 1 || newW > 512 || newH > 512) {
+      throw new Error('Invalid map dimensions (1–512)');
+    }
+    if (newW === map.width && newH === map.height) return false;
+
+    const before = snapshotMapState();
+    const next = new Int32Array(newW * newH);
+    const fill = Number.isFinite(fillType) && fillType >= 0 ? (fillType >>> 0) : -1;
+    next.fill(fill);
+    const copyW = Math.min(map.width, newW);
+    const copyH = Math.min(map.height, newH);
+    for (let y = 0; y < copyH; y++) {
+      for (let x = 0; x < copyW; x++) {
+        next[y * newW + x] = tileGrid[y * map.width + x];
+      }
+    }
+    objects = objects.filter(function (o) {
+      const tx = Math.floor(o.x);
+      const ty = Math.floor(o.y);
+      return tx >= 0 && ty >= 0 && tx < newW && ty < newH;
+    });
+    startTile = {
+      x: Math.max(0, Math.min(newW - 1, startTile.x)),
+      y: Math.max(0, Math.min(newH - 1, startTile.y)),
+    };
+    map.width = newW;
+    map.height = newH;
+    tileGrid = next;
+    selectedCell = null;
+    selectedObjectId = null;
+
+    const after = snapshotMapState();
+    pushUndo({ kind: 'resize', before: before, after: after });
+    markDirty();
+    centerCamera();
+    updateChrome();
+    updateProps();
+    return true;
+  }
+
+  function resizeMapDocument(doc, newW, newH, fillType) {
+    if (!Number.isInteger(newW) || !Number.isInteger(newH) || newW < 1 || newH < 1 || newW > 512 || newH > 512) {
+      throw new Error('Invalid map dimensions (1–512)');
+    }
+    const fill = Number.isFinite(fillType) && fillType >= 0 ? (fillType >>> 0) : -1;
+    const tiles = [];
+    const oldTiles = Array.isArray(doc.tiles) ? doc.tiles : [];
+    const byKey = new Map();
+    oldTiles.forEach(function (t) {
+      byKey.set((Math.trunc(t.x) << 16) | (Math.trunc(t.y) & 0xffff), t.type >>> 0);
+    });
+    for (let y = 0; y < newH; y++) {
+      for (let x = 0; x < newW; x++) {
+        const key = (x << 16) | y;
+        if (byKey.has(key)) tiles.push({ x: x, y: y, type: byKey.get(key) });
+        else if (fill >= 0) tiles.push({ x: x, y: y, type: fill });
+      }
+    }
+    const objectsOut = (Array.isArray(doc.objects) ? doc.objects : []).filter(function (o) {
+      const tx = Math.floor(Number(o.x));
+      const ty = Math.floor(Number(o.y));
+      return tx >= 0 && ty >= 0 && tx < newW && ty < newH;
+    });
+    let sx = 0;
+    let sy = 0;
+    if (doc.start) {
+      sx = Math.max(0, Math.min(newW - 1, Math.floor(Number(doc.start.x))));
+      sy = Math.max(0, Math.min(newH - 1, Math.floor(Number(doc.start.y))));
+    }
+    return {
+      format: doc.format || 'hive-map-v1',
+      name: doc.name,
+      width: newW,
+      height: newH,
+      defaultTile: Number.isFinite(doc.defaultTile) ? doc.defaultTile : -1,
+      start: { x: sx + 0.5, y: sy + 0.5 },
+      tiles: tiles,
+      objects: objectsOut,
+    };
+  }
+
   function openNewDialog() {
     dlgNew.showModal();
+  }
+
+  function openResizeDialog() {
+    if (!map) {
+      toast('Open a map first', 'warn');
+      return;
+    }
+    resizeTargetFile = null;
+    document.getElementById('resize-current').textContent =
+      'Current size: ' + map.width + '×' + map.height;
+    const form = document.getElementById('form-resize');
+    form.elements.width.value = String(map.width);
+    form.elements.height.value = String(map.height);
+    form.elements.fillTile.value = '';
+    dlgResize.showModal();
+  }
+
+  function openResizeDialogForProject(project) {
+    resizeTargetFile = project.file;
+    document.getElementById('resize-current').textContent =
+      (project.name || project.file) + ' — current size: '
+      + (project.width || '?') + '×' + (project.height || '?');
+    const form = document.getElementById('form-resize');
+    form.elements.width.value = String(project.width || 32);
+    form.elements.height.value = String(project.height || 32);
+    form.elements.fillTile.value = '';
+    dlgResize.showModal();
   }
 
   dlgNew.addEventListener('close', function () {
@@ -1066,6 +1461,7 @@
         if (!res.ok) throw new Error(res.j.error || 'Failed to create map');
         loadMapDocument(res.j.map, null);
         dirty = true;
+        hideProjectsScreen();
         updateChrome();
         toast('Created ' + width + '×' + height + ' map');
       })
@@ -1073,51 +1469,15 @@
   });
 
   async function openOpenDialog() {
-    openSelection = null;
-    btnOpenConfirm.disabled = true;
-    openList.innerHTML = '<div class="asset-status">Loading…</div>';
-    dlgOpen.showModal();
-    try {
-      const res = await fetch('/api/maps');
-      const data = await res.json();
-      openList.innerHTML = '';
-      if (!data.maps || !data.maps.length) {
-        openList.innerHTML = '<div class="asset-status">No saved maps yet</div>';
-      } else {
-        data.maps.forEach(function (m) {
-          const el = document.createElement('div');
-          el.className = 'open-item';
-          el.innerHTML = '<div class="name">' + escapeHtml(m.name) + '</div>'
-            + '<div class="sub">' + escapeHtml(m.file) + ' · '
-            + (m.width || '?') + '×' + (m.height || '?') + '</div>';
-          el.addEventListener('click', function () {
-            openList.querySelectorAll('.open-item').forEach(function (n) { n.classList.remove('selected'); });
-            el.classList.add('selected');
-            openSelection = m.file;
-            btnOpenConfirm.disabled = false;
-          });
-          openList.appendChild(el);
-        });
-      }
-    } catch (err) {
-      openList.innerHTML = '<div class="asset-status">Failed to list maps</div>';
-    }
+    goToProjects();
   }
 
   dlgOpen.addEventListener('close', function () {
     if (dlgOpen.returnValue !== 'ok' || !openSelection) return;
-    fetch('/api/maps/' + encodeURIComponent(openSelection))
-      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
-      .then(function (res) {
-        if (!res.ok) throw new Error(res.j.error || 'Failed to open');
-        loadMapDocument(res.j.map, res.j.file);
-        toast('Opened ' + res.j.file);
-      })
-      .catch(function (err) { toast(err.message, 'error'); });
+    openProjectFile(openSelection);
   });
 
-  openFileInput.addEventListener('change', function () {
-    const file = openFileInput.files && openFileInput.files[0];
+  function importLocalMapFile(file, closeDialog) {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = function () {
@@ -1125,13 +1485,23 @@
         const doc = JSON.parse(String(reader.result));
         loadMapDocument(doc, file.name);
         dirty = true;
-        dlgOpen.close();
+        hideProjectsScreen();
+        if (closeDialog && dlgOpen.open) dlgOpen.close();
         toast('Loaded local file ' + file.name);
       } catch (err) {
         toast('Invalid map JSON: ' + err.message, 'error');
       }
     };
     reader.readAsText(file);
+  }
+
+  openFileInput.addEventListener('change', function () {
+    importLocalMapFile(openFileInput.files && openFileInput.files[0], true);
+  });
+
+  projectsImportFile.addEventListener('change', function () {
+    importLocalMapFile(projectsImportFile.files && projectsImportFile.files[0], false);
+    projectsImportFile.value = '';
   });
 
   function openSaveAsDialog() {
@@ -1147,6 +1517,56 @@
     const file = String(fd.get('file') || '').trim();
     const overwrite = !!fd.get('overwrite');
     saveMapToServer(file, overwrite);
+  });
+
+  dlgResize.addEventListener('close', function () {
+    if (dlgResize.returnValue !== 'ok') {
+      resizeTargetFile = null;
+      return;
+    }
+    const fd = new FormData(document.getElementById('form-resize'));
+    const width = Number(fd.get('width'));
+    const height = Number(fd.get('height'));
+    const fillTile = parseDefaultTile(fd.get('fillTile'));
+    if (Number.isNaN(fillTile)) {
+      toast('Invalid fill tile type', 'error');
+      resizeTargetFile = null;
+      return;
+    }
+    const targetFile = resizeTargetFile;
+    resizeTargetFile = null;
+
+    if (targetFile) {
+      fetch('/api/maps/' + encodeURIComponent(targetFile))
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+        .then(function (res) {
+          if (!res.ok) throw new Error(res.j.error || 'Failed to load project');
+          const resized = resizeMapDocument(res.j.map, width, height, fillTile);
+          return fetch('/api/maps', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file: targetFile, map: resized, overwrite: true }),
+          }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); });
+        })
+        .then(function (res) {
+          if (!res.ok) throw new Error(res.j.error || 'Failed to save resized map');
+          toast('Resized ' + targetFile + ' to ' + width + '×' + height);
+          if (mapFile === targetFile && map) {
+            loadMapDocument(res.j.map, targetFile);
+          }
+          if (projectsVisible) refreshProjects();
+        })
+        .catch(function (err) { toast(err.message, 'error'); });
+      return;
+    }
+
+    try {
+      const changed = resizeCurrentMap(width, height, fillTile);
+      if (!changed) toast('Size unchanged', 'warn');
+      else toast('Resized to ' + width + '×' + height);
+    } catch (err) {
+      toast(err.message, 'error');
+    }
   });
 
   async function saveMapToServer(fileName, overwrite) {
@@ -1206,12 +1626,27 @@
   }
 
   // ── Wire UI ──────────────────────────────────────────────────────────
+  document.getElementById('btn-projects').addEventListener('click', goToProjects);
   document.getElementById('btn-new').addEventListener('click', openNewDialog);
-  document.getElementById('btn-empty-new').addEventListener('click', openNewDialog);
+  document.getElementById('btn-projects-new').addEventListener('click', openNewDialog);
+  document.getElementById('btn-projects-empty-new').addEventListener('click', openNewDialog);
+  document.getElementById('btn-projects-import').addEventListener('click', function () {
+    projectsImportFile.click();
+  });
   document.getElementById('btn-open').addEventListener('click', openOpenDialog);
-  document.getElementById('btn-empty-open').addEventListener('click', openOpenDialog);
   document.getElementById('btn-save').addEventListener('click', function () { saveMap(false); });
   document.getElementById('btn-save-as').addEventListener('click', function () { saveMap(true); });
+  document.getElementById('btn-resize').addEventListener('click', openResizeDialog);
+  document.getElementById('brush-size').addEventListener('input', function (e) {
+    setBrushSize(e.target.value);
+  });
+  document.getElementById('btn-brush-down').addEventListener('click', function () {
+    setBrushSize(brushSize - 1);
+  });
+  document.getElementById('btn-brush-up').addEventListener('click', function () {
+    setBrushSize(brushSize + 1);
+  });
+  updateBrushSizeUi();
   document.getElementById('btn-undo').addEventListener('click', undo);
   document.getElementById('btn-redo').addEventListener('click', redo);
   document.getElementById('btn-zoom-in').addEventListener('click', function () {
@@ -1277,6 +1712,7 @@
   async function boot() {
     resizeCanvas();
     updateChrome();
+    showProjectsScreen();
     loop();
     try {
       const res = await fetch('/api/catalog');

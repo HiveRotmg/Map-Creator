@@ -11,10 +11,12 @@
     <header class="toolbar">
       <div class="toolbar-brand">Hive Map Editor</div>
       <div class="toolbar-group">
+        <button type="button" id="btn-projects" title="Projects home">Projects</button>
         <button type="button" id="btn-new" title="New map (Ctrl+N)">New</button>
         <button type="button" id="btn-open" title="Open map (Ctrl+O)">Open</button>
         <button type="button" id="btn-save" title="Save (Ctrl+S)">Save</button>
         <button type="button" id="btn-save-as" title="Save as">Save As</button>
+        <button type="button" id="btn-resize" title="Resize map" disabled>Resize</button>
       </div>
       <div class="toolbar-sep"></div>
       <div class="toolbar-group">
@@ -30,6 +32,14 @@
         <button type="button" data-tool="start" title="Set start tile (S)">Start</button>
         <button type="button" data-tool="fill" title="Flood fill (F)">Fill</button>
         <button type="button" data-tool="rect" title="Rectangle paint (R)">Rect</button>
+      </div>
+      <div class="toolbar-sep"></div>
+      <div class="toolbar-group brush-size-group" title="Brush size for tile paint / erase ([ and ])">
+        <span class="brush-size-label">Brush</span>
+        <button type="button" id="btn-brush-down" title="Smaller brush ([)">−</button>
+        <input type="range" id="brush-size" min="1" max="16" value="1" />
+        <button type="button" id="btn-brush-up" title="Larger brush (])">+</button>
+        <span id="brush-size-label">1×1</span>
       </div>
       <div class="toolbar-sep"></div>
       <div class="toolbar-group">
@@ -65,14 +75,6 @@
 
       <section class="canvas-wrap">
         <canvas id="map-canvas" tabindex="0" aria-label="Map editor canvas"></canvas>
-        <div id="empty-state" class="empty-state">
-          <h1>Create or open a map</h1>
-          <p>New maps use the same tile/object IDs as the Headless Game Wiki catalog.</p>
-          <div class="empty-actions">
-            <button type="button" id="btn-empty-new" class="primary">New Map</button>
-            <button type="button" id="btn-empty-open">Open Map</button>
-          </div>
-        </div>
       </section>
 
       <aside class="props-panel">
@@ -86,6 +88,30 @@
         </div>
       </aside>
     </main>
+  </div>
+
+  <div id="projects-screen" class="projects-screen">
+    <div class="projects-inner">
+      <header class="projects-header">
+        <div>
+          <p class="projects-kicker">Hive Map Creator</p>
+          <h1>Projects</h1>
+          <p class="projects-sub">Open a saved map or start a new one.</p>
+        </div>
+        <div class="projects-actions">
+          <button type="button" id="btn-projects-import" class="ghost">Import JSON</button>
+          <button type="button" id="btn-projects-new" class="primary">New Map</button>
+          <input type="file" id="projects-import-file" accept=".json,application/json" hidden />
+        </div>
+      </header>
+      <div id="projects-grid" class="projects-grid"></div>
+      <div id="projects-empty" class="projects-empty hidden">
+        <h2>No projects yet</h2>
+        <p>Create a map and save it — it will show up here with a preview.</p>
+        <button type="button" id="btn-projects-empty-new" class="primary">New Map</button>
+      </div>
+      <div id="projects-status" class="projects-status">Loading projects…</div>
+    </div>
   </div>
 
   <!-- New map dialog -->
@@ -131,6 +157,26 @@
       <div class="dlg-actions">
         <button type="submit" value="cancel" class="ghost" formnovalidate>Cancel</button>
         <button type="submit" value="ok" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Resize map dialog -->
+  <dialog id="dlg-resize">
+    <form method="dialog" id="form-resize">
+      <h2>Resize Map</h2>
+      <p id="resize-current" class="hint">Current size: —</p>
+      <div class="row">
+        <label>Width <input name="width" type="number" min="1" max="512" required /></label>
+        <label>Height <input name="height" type="number" min="1" max="512" required /></label>
+      </div>
+      <label>Fill new tiles (hex or decimal, blank = empty)
+        <input name="fillTile" placeholder="e.g. 0x57 or leave empty" />
+      </label>
+      <p class="hint">Shrinking clips tiles and objects outside the new bounds. The start tile is clamped inside the map.</p>
+      <div class="dlg-actions">
+        <button type="submit" value="cancel" class="ghost" formnovalidate>Cancel</button>
+        <button type="submit" value="ok" class="primary">Resize</button>
       </div>
     </form>
   </dialog>

@@ -4,29 +4,33 @@
  */
 
 import http from 'http';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from 'fs';
-import { join, extname, resolve, dirname } from 'path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'fs';
+import { join, extname, resolve, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { loadCatalog } from './lib/catalog.mjs';
 import { TextureServer } from './lib/textures.mjs';
+import { renderMapPreviewPng, PREVIEW_VERSION } from './lib/preview.mjs';
 import {
   createBlankMap,
   parseMapJson,
   serializeMap,
   validateMap,
   MAP_FORMAT,
+  worldToTile,
 } from './lib/map-format.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = __dirname;
 const PUBLIC_DIR = join(ROOT, 'public');
 const MAPS_DIR = join(ROOT, 'maps');
+const PREVIEWS_DIR = join(MAPS_DIR, '.previews');
 
 const DEFAULT_DATA_DIR = resolve(ROOT, 'data');
 const DATA_DIR = resolve(process.env.MAP_EDITOR_DATA_DIR || process.env.HIVE_DATA_DIR || DEFAULT_DATA_DIR);
 const PORT = Number(process.env.PORT || 4173);
 
 mkdirSync(MAPS_DIR, { recursive: true });
+mkdirSync(PREVIEWS_DIR, { recursive: true });
 
 if (!existsSync(join(DATA_DIR, 'objects.xml')) || !existsSync(join(DATA_DIR, 'tiles.xml'))) {
   console.error(`[map-editor] Bundled game data not found at ${DATA_DIR}`);
@@ -78,6 +82,23 @@ function safeMapFileName(name) {
   return base.toLowerCase().endsWith('.json') ? base : `${base}.json`;
 }
 
+function previewPathFor(file) {
+  return join(PREVIEWS_DIR, `${basename(file, '.json')}.v${PREVIEW_VERSION}.png`);
+}
+
+async function writePreviewForMap(file, doc) {
+  try {
+    const png = await renderMapPreviewPng(doc, {
+      textures,
+      tileByType: catalog.tileByType,
+      objectByType: catalog.objectByType,
+    });
+    writeFileSync(previewPathFor(file), png);
+  } catch (err) {
+    console.warn('[map-editor] preview failed:', err.message);
+  }
+}
+
 function listMaps() {
   if (!existsSync(MAPS_DIR)) return [];
   return readdirSync(MAPS_DIR)
@@ -88,20 +109,28 @@ function listMaps() {
       let meta = {};
       try {
         const doc = JSON.parse(readFileSync(p, 'utf8'));
+        const start = doc.start
+          ? worldToTile(doc.start.x, doc.start.y)
+          : null;
         meta = {
           name: doc.name || n,
           width: doc.width,
           height: doc.height,
           format: doc.format || MAP_FORMAT,
+          tileCount: Array.isArray(doc.tiles) ? doc.tiles.length : 0,
+          objectCount: Array.isArray(doc.objects) ? doc.objects.length : 0,
+          start,
+          hasPreview: existsSync(previewPathFor(n)),
         };
       } catch {
-        meta = { name: n };
+        meta = { name: n, hasPreview: false };
       }
       return {
         file: n,
         ...meta,
         mtime: st.mtimeMs,
         size: st.size,
+        previewUrl: `/api/maps/${encodeURIComponent(n)}/preview?v=${PREVIEW_VERSION}&t=${Math.trunc(st.mtimeMs)}`,
       };
     })
     .sort((a, b) => b.mtime - a.mtime);
@@ -145,6 +174,55 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && url.pathname === '/api/maps') {
       sendJson(res, 200, { maps: listMaps() });
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname.startsWith('/api/maps/') && url.pathname.endsWith('/preview')) {
+      const raw = decodeURIComponent(url.pathname.slice('/api/maps/'.length, -'/preview'.length));
+      const file = safeMapFileName(raw);
+      if (!file) {
+        sendJson(res, 400, { error: 'Invalid map name' });
+        return;
+      }
+      const mapPath = join(MAPS_DIR, file);
+      if (!existsSync(mapPath)) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('not_found');
+        return;
+      }
+      const prevPath = previewPathFor(file);
+      try {
+        if (!existsSync(prevPath) || statSync(prevPath).mtimeMs < statSync(mapPath).mtimeMs) {
+          const doc = parseMapJson(readFileSync(mapPath, 'utf8'));
+          await writePreviewForMap(file, doc);
+        }
+        const buf = readFileSync(prevPath);
+        res.writeHead(200, {
+          'Content-Type': 'image/png',
+          'Cache-Control': 'no-cache',
+        });
+        res.end(buf);
+      } catch (err) {
+        sendJson(res, 500, { error: err.message });
+      }
+      return;
+    }
+
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/maps/')) {
+      const file = safeMapFileName(decodeURIComponent(url.pathname.slice('/api/maps/'.length)));
+      if (!file) {
+        sendJson(res, 400, { error: 'Invalid map name' });
+        return;
+      }
+      const path = join(MAPS_DIR, file);
+      if (!existsSync(path)) {
+        sendJson(res, 404, { error: 'Map not found' });
+        return;
+      }
+      unlinkSync(path);
+      const prev = previewPathFor(file);
+      if (existsSync(prev)) unlinkSync(prev);
+      sendJson(res, 200, { ok: true, file });
       return;
     }
 
@@ -200,6 +278,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       writeFileSync(path, serializeMap(doc), 'utf8');
+      await writePreviewForMap(file, doc);
       sendJson(res, 200, { ok: true, file, validation, map: doc });
       return;
     }
