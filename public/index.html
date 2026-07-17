@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hive Map Editor</title>
+  <link rel="stylesheet" href="editor.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="toolbar">
+      <div class="toolbar-brand">Hive Map Editor</div>
+      <div class="toolbar-group">
+        <button type="button" id="btn-new" title="New map (Ctrl+N)">New</button>
+        <button type="button" id="btn-open" title="Open map (Ctrl+O)">Open</button>
+        <button type="button" id="btn-save" title="Save (Ctrl+S)">Save</button>
+        <button type="button" id="btn-save-as" title="Save as">Save As</button>
+      </div>
+      <div class="toolbar-sep"></div>
+      <div class="toolbar-group">
+        <button type="button" id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
+        <button type="button" id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
+      </div>
+      <div class="toolbar-sep"></div>
+      <div class="toolbar-group tools" id="tool-buttons">
+        <button type="button" data-tool="select" class="active" title="Select / inspect (V)">Select</button>
+        <button type="button" data-tool="tile" title="Paint tiles (T)">Tile</button>
+        <button type="button" data-tool="object" title="Place objects (O)">Object</button>
+        <button type="button" data-tool="erase" title="Erase (E)">Erase</button>
+        <button type="button" data-tool="start" title="Set start tile (S)">Start</button>
+        <button type="button" data-tool="fill" title="Flood fill (F)">Fill</button>
+        <button type="button" data-tool="rect" title="Rectangle paint (R)">Rect</button>
+      </div>
+      <div class="toolbar-sep"></div>
+      <div class="toolbar-group">
+        <button type="button" id="btn-zoom-out" title="Zoom out">−</button>
+        <span id="zoom-label">100%</span>
+        <button type="button" id="btn-zoom-in" title="Zoom in">+</button>
+        <button type="button" id="btn-zoom-reset" title="Reset zoom">Reset</button>
+        <label class="check"><input type="checkbox" id="toggle-grid" checked /> Grid</label>
+      </div>
+      <div class="toolbar-spacer"></div>
+      <div class="toolbar-meta">
+        <span id="map-title">No map</span>
+        <span id="cursor-info">—</span>
+        <span id="start-info">Start: —</span>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside class="asset-panel">
+        <div class="asset-tabs">
+          <button type="button" data-catalog="tiles" class="active">Tiles</button>
+          <button type="button" data-catalog="objects">Objects</button>
+        </div>
+        <div class="asset-search-row">
+          <input type="search" id="asset-search" placeholder="Search id, name, hex…" autocomplete="off" />
+          <select id="asset-filter">
+            <option value="all">All</option>
+          </select>
+        </div>
+        <div id="asset-list" class="asset-list" tabindex="0"></div>
+        <div id="asset-status" class="asset-status">Loading catalog…</div>
+      </aside>
+
+      <section class="canvas-wrap">
+        <canvas id="map-canvas" tabindex="0" aria-label="Map editor canvas"></canvas>
+        <div id="empty-state" class="empty-state">
+          <h1>Create or open a map</h1>
+          <p>New maps use the same tile/object IDs as the Headless Game Wiki catalog.</p>
+          <div class="empty-actions">
+            <button type="button" id="btn-empty-new" class="primary">New Map</button>
+            <button type="button" id="btn-empty-open">Open Map</button>
+          </div>
+        </div>
+      </section>
+
+      <aside class="props-panel">
+        <h2>Properties</h2>
+        <div id="props-body" class="props-body">
+          <p class="muted">Select a cell, tile, or object to inspect it.</p>
+        </div>
+        <div class="props-brush">
+          <h3>Brush</h3>
+          <div id="brush-preview" class="brush-preview muted">None selected</div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <!-- New map dialog -->
+  <dialog id="dlg-new">
+    <form method="dialog" id="form-new">
+      <h2>New Map</h2>
+      <label>Name <input name="name" value="Untitled Map" required maxlength="80" /></label>
+      <div class="row">
+        <label>Width <input name="width" type="number" min="1" max="512" value="32" required /></label>
+        <label>Height <input name="height" type="number" min="1" max="512" value="32" required /></label>
+      </div>
+      <label>Default fill tile type (hex or decimal, blank = empty)
+        <input name="defaultTile" placeholder="e.g. 0x57 or leave empty" />
+      </label>
+      <p class="hint">Max size 512×512. Start tile defaults to (0, 0).</p>
+      <div class="dlg-actions">
+        <button type="submit" value="cancel" class="ghost" formnovalidate>Cancel</button>
+        <button type="submit" value="ok" class="primary">Create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Open map dialog -->
+  <dialog id="dlg-open">
+    <form method="dialog" id="form-open">
+      <h2>Open Map</h2>
+      <div id="open-list" class="open-list"></div>
+      <p class="hint">Or choose a local <code>.json</code> map file:</p>
+      <input type="file" id="open-file" accept=".json,application/json" />
+      <div class="dlg-actions">
+        <button type="submit" value="cancel" class="ghost" formnovalidate>Cancel</button>
+        <button type="submit" value="ok" class="primary" id="btn-open-confirm" disabled>Open</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Save as dialog -->
+  <dialog id="dlg-save-as">
+    <form method="dialog" id="form-save-as">
+      <h2>Save As</h2>
+      <label>File name <input name="file" required maxlength="80" placeholder="my-map" /></label>
+      <label class="check"><input type="checkbox" name="overwrite" /> Overwrite if exists</label>
+      <div class="dlg-actions">
+        <button type="submit" value="cancel" class="ghost" formnovalidate>Cancel</button>
+        <button type="submit" value="ok" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="editor.js"></script>
+</body>
+</html>
